@@ -1,0 +1,20 @@
+display:
+  monitor_index: 1
+  capture_width: 1366
+  capture_height: 768
+  capture_fps: 30
+encoding:
+  preset: ultrafast
+  tune: zerolatency
+  bitrate: 4M
+  keyframe_interval: 30
+  profile: baseline
+  level: '3.1'
+  slices: 1
+  threads: 1
+network:
+  video_port: 5000
+  control_port: 5002
+  host: 0.0.0.0
+android:
+  default_server: 127.0.0.1

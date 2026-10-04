@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>PocketDisplay 控制客户端</title>
+  <link rel="stylesheet" href="/assets/vendor/tdesign.min.css" />
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #f3f3f3;
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: #000000e6;
+    }
+    /* Full-height column: header + cards keep their size, the log card soaks up
+       the leftover space so the page never scrolls. */
+    /* Content-driven height (no 100vh): the window is resized to fit the
+       content, so there is never an empty strip at the bottom. */
+    #app { box-sizing: border-box; padding: 16px 20px 18px;
+           display: flex; flex-direction: column; }
+
+    .app-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex: none; }
+    .app-logo { width: 34px; height: 34px; }
+    .app-title { font-size: 18px; font-weight: 600; line-height: 1.2; }
+    .app-sub { font-size: 12px; color: #00000066; margin-top: 2px; }
+    .header-tags { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+    .server-card { flex: none; margin-bottom: 14px; }
+
+    /* Left column stacks 显示器与分辨率 + 编码参数; the right column is one
+       tall log card that reaches the window bottom. */
+    .main-grid {
+      display: grid; grid-template-columns: minmax(430px, 47%) 1fr;
+      gap: 14px; align-items: stretch;
+    }
+    .col-left, .col-right { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+    .col-left > t-card, .col-right > t-card { min-height: 0; }
+    @media (max-width: 780px) { .main-grid { grid-template-columns: 1fr; } }
+
+    .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+    .label { width: 84px; text-align: right; color: #00000099; font-size: 13px; flex: none; }
+    .hint { font-size: 12px; color: #00000066; }
+    .push-right { margin-left: auto; }
+
+    /* Encoding card: two aligned label+control cells per row. */
+    .enc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+    .enc-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .enc-item .label { width: 46px; }
+    /* TDesign renders its own inner wrapper with a fixed width, so flex:1 on the
+       custom element alone does not shrink it — force the inner box to 100%
+       or the right column overflows the card. */
+    .enc-item > * { min-width: 0; }
+    .enc-item .t-input, .enc-item .t-input__wrap, .enc-item .t-input__inner,
+    .enc-item .t-select, .enc-item .t-input-number {
+      width: 100% !important; box-sizing: border-box; min-width: 0;
+    }
+    .unit { color: #00000066; font-size: 12px; }
+    .pd-icon { width: 16px; height: 16px; }
+
+    /* The log card matches the left column height (grid stretch) and the inner
+       log box fills the whole card body. */
+    .log-card { flex: 1 1 auto; min-height: 340px; display: flex; flex-direction: column; }
+    .log-card .t-card__body { flex: 1 1 auto; min-height: 0;
+                              display: flex; flex-direction: column; }
+    .log-box {
+      flex: 1 1 auto; height: auto; min-height: 120px;
+      overflow: auto; white-space: pre-wrap; word-break: break-all;
+      background: #fff; border: 1px solid #dcdcdc; border-radius: 6px;
+      padding: 8px 10px; font-size: 12px; line-height: 1.65;
+      font-family: Consolas, "Microsoft YaHei UI", monospace;
+    }
+    .log-empty { color: #00000045; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <div class="app-header">
+    <img class="app-logo" src="/assets/icon.png" alt="" />
+    <div>
+      <div class="app-title">PocketDisplay 控制客户端</div>
+      <div class="app-sub">手机作为副屏 · Windows 串流控制</div>
+    </div>
+    <div class="header-tags">
+      <t-tag theme="default" variant="light">捕获 {{ status.capture || '-' }}</t-tag>
+      <t-tag v-if="status.running" theme="success" variant="light">服务器运行中</t-tag>
+      <t-tag v-else theme="default" variant="light">服务器已停止</t-tag>
+      <t-tag v-if="status.phone === 'connected'" theme="primary" variant="light">安卓设备已连接</t-tag>
+      <t-tag v-else theme="warning" variant="light">安卓设备未连接</t-tag>
+      <t-tag v-if="status.resolution_change" theme="primary" variant="light">变化：{{ status.resolution_change }}</t-tag>
+    </div>
+  </div>
+
+  <t-card title="服务器" :bordered="true" size="small" class="server-card">
+    <div class="row" style="margin:0;">
+      <t-space size="small">
+        <t-button theme="primary" :loading="busy.start" @click="onStart">启动</t-button>
+        <t-button theme="default" :loading="busy.stop" @click="onStop">停止</t-button>
+        <t-button theme="default" variant="outline" :loading="busy.reconnect" @click="onReconnect">一键重连</t-button>
+        <t-button theme="default" variant="outline" @click="onMinimizeToTray">
+          <template #icon>
+            <!-- down-arrow into a taskbar/tray line -->
+            <svg class="pd-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 1.9v7.1M4.6 6.2 8 9.6l3.4-3.4"
+                    stroke="currentColor" stroke-width="1.4" fill="none"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="2.4" y="11.6" width="11.2" height="2" rx="1" fill="currentColor"/>
+            </svg>
+          </template>
+          缩到右下角
+        </t-button>
+      </t-space>
+      <t-tag v-if="applying" theme="warning" variant="outline">正在应用…</t-tag>
+      <span class="hint push-right">应用后服务器自动重启捕获，安卓设备自动重连，无需手动操作</span>
+    </div>
+  </t-card>
+
+  <div class="main-grid">
+    <div class="col-left">
+    <t-card title="显示器与分辨率" :bordered="true" size="small">
+      <div class="row">
+        <span class="label">副屏显示器</span>
+        <t-select v-model="monitorIndex" :options="monitorOptions" placeholder="选择显示器"
+                  style="flex:1; min-width:200px;" @change="onMonitorChange"></t-select>
+      </div>
+      <div class="row">
+        <span class="label">分辨率</span>
+        <t-select v-model="resolution" :options="resolutionOptions" placeholder="选择分辨率"
+                  style="width:190px;"></t-select>
+      </div>
+      <div class="row" v-if="modeInfo">
+        <span class="label"></span>
+        <t-tag :theme="isBest ? 'success' : 'default'" variant="light">{{ modeInfo }}</t-tag>
+      </div>
+      <div class="row">
+        <span class="label"></span>
+        <t-space size="small">
+          <t-button theme="primary" :loading="busy.apply" @click="onApply">应用分辨率</t-button>
+          <t-button theme="default" variant="outline" :loading="busy.apply"
+                    @click="onApplyRecommended">★ 应用推荐（低延迟）</t-button>
+        </t-space>
+      </div>
+      <div class="row">
+        <span class="label">安卓设备</span>
+        <span class="hint">{{ phoneText || '未读取（adb 不可用或未连接）' }}</span>
+        <t-button class="push-right" theme="default" size="small" variant="outline"
+                  :loading="busy.phone" @click="refreshPhone">重新读取</t-button>
+      </div>
+    </t-card>
+
+    <t-card title="编码参数" :bordered="true" size="small">
+      <div class="enc-grid">
+        <div class="enc-item">
+          <span class="label">FPS</span>
+          <t-input-number v-model="cfg.fps" :min="10" :max="60" theme="column"></t-input-number>
+        </div>
+        <div class="enc-item">
+          <span class="label">码率</span>
+          <t-input v-model="cfg.bitrate" placeholder="填数字即可">
+            <template #suffix><span class="unit">M</span></template>
+          </t-input>
+        </div>
+        <div class="enc-item">
+          <span class="label">Preset</span>
+          <t-select v-model="cfg.preset" :options="presetOptions"></t-select>
+        </div>
+        <div class="enc-item">
+          <span class="label">Tune</span>
+          <t-select v-model="cfg.tune" :options="tuneOptions"></t-select>
+        </div>
+        <div class="enc-item">
+          <span class="label">Profile</span>
+          <t-select v-model="cfg.profile" :options="profileOptions"></t-select>
+        </div>
+        <div class="enc-item">
+          <span class="label">Level</span>
+          <t-select v-model="cfg.level" :options="levelOptions"></t-select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px; margin-bottom:0;">
+        <span class="label"></span>
+        <t-button theme="primary" :loading="busy.encode" @click="onApplyEncoding">应用并重启</t-button>
+        <span class="hint">修改后需重启服务器生效</span>
+      </div>
+    </t-card>
+    </div>
+
+    <div class="col-right">
+      <t-card title="服务器日志" :bordered="true" size="small" class="log-card">
+        <div ref="logBox" class="log-box"><span v-if="!logText" class="log-empty">暂无日志，点击「启动」后这里会显示服务器输出</span>{{ logText }}</div>
+      </t-card>
+    </div>
+  </div>
+
+</div>
+
+<script src="/assets/vendor/vue.global.prod.js"></script>
+<script src="/assets/vendor/tdesign.min.js"></script>
+<script src="/ui/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,219 @@
+$ErrorActionPreference = 'Stop'
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+function Get-CommandPath {
+    param([string[]]$Names)
+    foreach ($name in $Names) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) {
+            return $command.Source
+        }
+    }
+    return $null
+}
+
+function Get-ConfiguredPort {
+    param(
+        [string]$Name,
+        [int]$Default
+    )
+
+    $configPath = Join-Path $PSScriptRoot 'configuration.yaml'
+    if (-not (Test-Path $configPath)) {
+        return $Default
+    }
+
+    $match = Select-String -Path $configPath -Pattern "^\s*$($Name):\s*(\d+)" | Select-Object -First 1
+    if ($match -and $match.Matches.Count -gt 0) {
+        return [int]$match.Matches[0].Groups[1].Value
+    }
+
+    return $Default
+}
+
+function Test-AdbDevice {
+    param([string]$AdbPath)
+
+    $lines = & $AdbPath devices
+    return @($lines | Where-Object { $_ -match "	device$" }).Count -gt 0
+}
+
+$pythonPath = $null
+$pythonArgs = @()
+$ffmpegPath = $null
+$adbPath = $null
+$videoPort = Get-ConfiguredPort -Name 'video_port' -Default 5000
+$controlPort = Get-ConfiguredPort -Name 'control_port' -Default 5002
+$apkPath = Join-Path $PSScriptRoot 'android\app\build\outputs\apk\debug\app-debug.apk'
+$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'PocketDisplay USB.lnk'
+
+Write-Step 'Checking for virtual display driver'
+$virtualDisplay = $false
+try {
+    $displays = Get-CimInstance -ClassName Win32_PnPSignedDriver -Filter "DeviceClass='DISPLAY'" -ErrorAction SilentlyContinue
+    $vddDrivers = $displays | Where-Object {
+        $_.DeviceName -match 'virtual|indirect|IDD|VDD' -or
+        $_.Manufacturer -match 'virtual|IDD|MttVDD'
+    }
+    if ($vddDrivers) {
+        $virtualDisplay = $true
+        Write-Host "Virtual display driver detected: $($vddDrivers[0].DeviceName)" -ForegroundColor Green
+    }
+} catch {}
+
+if (-not $virtualDisplay) {
+    # Also check by monitor count vs physical output count
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        $monitorCount = [System.Windows.Forms.Screen]::AllScreens.Count
+        if ($monitorCount -gt 1) {
+            Write-Host "Found $monitorCount monitors - virtual display may already be configured." -ForegroundColor Yellow
+        } else {
+            Write-Warning '*** No virtual display driver detected. ***'
+            Write-Warning 'PocketDisplay requires a virtual display driver to work as a secondary screen.'
+            Write-Warning 'Without it, the server can only mirror your existing physical monitor.'
+            Write-Warning ''
+            Write-Warning 'Recommended: Virtual-Display-Driver by itsmikethetech'
+            Write-Warning 'https://github.com/itsmikethetech/Virtual-Display-Driver/releases'
+            Write-Warning ''
+            Write-Warning 'See docs\virtual-display-setup.md for step-by-step instructions.'
+            Write-Warning ''
+        }
+    } catch {
+        Write-Warning 'Could not detect virtual display status. See docs\virtual-display-setup.md.'
+    }
+}
+
+Write-Step 'Checking Python 3.10+'
+$pythonPath = Get-CommandPath -Names @('py', 'python')
+if (-not $pythonPath) {
+    throw 'Python 3.10+ is required. Download: https://www.python.org/downloads/windows/'
+}
+if ([IO.Path]::GetFileName($pythonPath).ToLowerInvariant() -eq 'py.exe') {
+    $pythonArgs = @('-3')
+}
+$pythonCode = 'import sys; print(chr(46).join(map(str, sys.version_info[:3])))'
+$pythonVersionText = (& $pythonPath @pythonArgs -c $pythonCode).Trim()
+$pythonVersion = [version]$pythonVersionText
+if ($pythonVersion.Major -lt 3 -or ($pythonVersion.Major -eq 3 -and $pythonVersion.Minor -lt 10)) {
+    throw "Found Python $pythonVersionText. Python 3.10+ is required."
+}
+Write-Host "Using Python $pythonVersionText at $pythonPath" -ForegroundColor Green
+
+Write-Step 'Checking FFmpeg'
+$ffmpegPath = Get-CommandPath -Names @('ffmpeg')
+if (-not $ffmpegPath) {
+    Write-Warning 'FFmpeg was not found on PATH.'
+    Write-Warning 'Download FFmpeg from https://ffmpeg.org/download.html and add it to PATH.'
+} else {
+    Write-Host "Using FFmpeg at $ffmpegPath" -ForegroundColor Green
+}
+
+Write-Step 'Checking ADB'
+$adbPath = Get-CommandPath -Names @('adb')
+if (-not $adbPath -and (Test-Path "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe")) {
+    $adbPath = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+}
+if (-not $adbPath) {
+    throw 'ADB was not found. Download Platform-Tools: https://developer.android.com/tools/releases/platform-tools'
+}
+Write-Host "Using ADB at $adbPath" -ForegroundColor Green
+
+Write-Step 'Installing Python dependencies'
+& $pythonPath @pythonArgs -m pip install -r ([IO.Path]::Combine($PSScriptRoot, "server", "requirements.txt"))
+
+Write-Step 'Building Android APK'
+$gradlePath = Join-Path $PSScriptRoot 'android\gradlew.bat'
+if (-not $env:JAVA_HOME) {
+    # Auto-detect Java from Android Studio's bundled JBR
+    $studioJbr = 'C:\Program Files\Android\Android Studio\jbr'
+    if (Test-Path "$studioJbr\bin\java.exe") {
+        $env:JAVA_HOME = $studioJbr
+        Write-Host "Auto-detected JAVA_HOME: $studioJbr" -ForegroundColor Green
+    }
+}
+if ($env:JAVA_HOME -and (Test-Path $gradlePath)) {
+    Push-Location (Join-Path $PSScriptRoot 'android')
+    try {
+        & .\gradlew.bat assembleDebug
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Gradle build failed. Check build output above.'
+        }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Warning 'Skipping APK build: JAVA_HOME not found and Android Studio JBR not detected.'
+    Write-Warning 'Set JAVA_HOME or install Android Studio to enable automatic builds.'
+}
+
+Write-Step 'Installing APK to Android device'
+if (-not (Test-Path $apkPath)) {
+    Write-Warning "APK not found at $apkPath. Build the Android app first."
+} elseif (-not (Test-AdbDevice -AdbPath $adbPath)) {
+    Write-Warning 'No connected ADB device found. Connect a device with USB debugging enabled.'
+} else {
+    Write-Host "Installing $apkPath to device..." -ForegroundColor Cyan
+    & $adbPath install -r $apkPath
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'APK installed successfully.' -ForegroundColor Green
+    } else {
+        Write-Warning 'APK installation failed. Ensure USB debugging is authorized on the device.'
+    }
+}
+
+Write-Step 'Setting up ADB reverse ports'
+if (Test-AdbDevice -AdbPath $adbPath) {
+    & $adbPath reverse "tcp:$videoPort" "tcp:$videoPort"
+    $controlResult = & $adbPath reverse "tcp:$controlPort" "tcp:$controlPort" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Control port reverse failed for $controlPort. Continuing because USB mode uses the video socket for touch input."
+        if ($controlResult) {
+            Write-Warning ($controlResult | Out-String).Trim()
+        }
+    }
+} else {
+    Write-Warning 'No connected ADB device found. Skipping reverse port setup.'
+}
+
+Write-Step 'Adding Windows Firewall rule for video port'
+if (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) {
+    $ruleName = "PocketDisplay Video $videoPort"
+    $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+    if (-not $existingRule) {
+        try {
+            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $videoPort | Out-Null
+            Write-Host "Created firewall rule: $ruleName" -ForegroundColor Green
+        } catch {
+            Write-Warning 'Could not create the firewall rule. Re-run PowerShell as Administrator if needed.'
+        }
+    } else {
+        Write-Host "Firewall rule already exists: $ruleName" -ForegroundColor Green
+    }
+} else {
+    Write-Warning 'NetSecurity cmdlets are unavailable; firewall rule was not created.'
+}
+
+Write-Step 'Creating desktop shortcut'
+$wshShell = New-Object -ComObject WScript.Shell
+$shortcut = $wshShell.CreateShortcut($shortcutPath)
+$shortcut.TargetPath = Join-Path $PSScriptRoot 'start_usb.bat'
+$shortcut.WorkingDirectory = $PSScriptRoot
+$shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,220"
+$shortcut.Save()
+Write-Host "Created shortcut: $shortcutPath" -ForegroundColor Green
+
+Write-Step 'Done'
+Write-Host 'Installation completed.' -ForegroundColor Green
+if (-not $virtualDisplay) {
+    Write-Host ''
+    Write-Host 'IMPORTANT: Make sure a virtual display driver is installed and the virtual' -ForegroundColor Yellow
+    Write-Host 'monitor is arranged in Settings > System > Display before starting the server.' -ForegroundColor Yellow
+    Write-Host 'See docs\virtual-display-setup.md for setup instructions.' -ForegroundColor Yellow
+    Write-Host ''
+}
+Write-Host 'Start the project with .\start_usb.bat and use 127.0.0.1 on the phone for USB mode.' -ForegroundColor Green

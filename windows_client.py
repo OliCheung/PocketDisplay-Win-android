@@ -39,12 +39,24 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVER_DIR = os.path.join(ROOT_DIR, "server")
-CONFIG_PATH = os.path.join(ROOT_DIR, "configuration.yaml")
-ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
-ICON_ICO = os.path.join(ASSETS_DIR, "icon.ico")
-ICON_PNG = os.path.join(ASSETS_DIR, "icon.png")
+if getattr(sys, "frozen", False):
+    # Frozen build (PyInstaller): assets are bundled in the read-only _MEIPASS
+    # temp dir, but the persisted config lives next to the .exe (writable).
+    _EXE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    _MEIPASS = getattr(sys, "_MEIPASS", _EXE_DIR)
+    ROOT_DIR = _EXE_DIR
+    SERVER_DIR = os.path.join(_MEIPASS, "server")
+    CONFIG_PATH = os.path.join(_EXE_DIR, "configuration.yaml")
+    ASSETS_DIR = os.path.join(_MEIPASS, "assets")
+    ICON_ICO = os.path.join(ASSETS_DIR, "icon.ico")
+    ICON_PNG = os.path.join(ASSETS_DIR, "icon.png")
+else:
+    ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+    SERVER_DIR = os.path.join(ROOT_DIR, "server")
+    CONFIG_PATH = os.path.join(ROOT_DIR, "configuration.yaml")
+    ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
+    ICON_ICO = os.path.join(ASSETS_DIR, "icon.ico")
+    ICON_PNG = os.path.join(ASSETS_DIR, "icon.png")
 
 # Pull the effective current settings straight from the server's config module.
 sys.path.insert(0, SERVER_DIR)
@@ -347,17 +359,32 @@ class ServerController:
         if self.proc and self.proc.poll() is None:
             return
         self.stop()  # ensure clean
-        # Launch the server in its own directory so `import config` resolves.
-        self.proc = subprocess.Popen(
-            # -u: unbuffered, so the log shows up in real time (stdout is a pipe).
-            [sys.executable, "-u", "server.py"],
-            cwd=SERVER_DIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        if getattr(sys, "frozen", False):
+            # Frozen build: the server is a standalone .exe sitting next to us.
+            # (Running `server.py` as a subprocess would re-launch THIS .exe.)
+            server_exe = os.path.join(os.path.dirname(sys.executable),
+                                     "PocketDisplayServer.exe")
+            self.proc = subprocess.Popen(
+                [server_exe],
+                cwd=os.path.dirname(sys.executable),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            # Launch the server in its own directory so `import config` resolves.
+            self.proc = subprocess.Popen(
+                # -u: unbuffered, so the log shows up in real time (stdout is a pipe).
+                [sys.executable, "-u", "server.py"],
+                cwd=SERVER_DIR,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
 

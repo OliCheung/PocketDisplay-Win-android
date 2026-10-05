@@ -3,11 +3,24 @@
 from pathlib import Path
 import os as _os
 import shutil as _shutil
+import sys as _sys
 
 import yaml
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+def _root_dir():
+    """Base directory that holds configuration.yaml.
+
+    In a frozen (PyInstaller) build, ``sys._MEIPASS`` is a read-only temp dir,
+    so the persisted config must live next to the .exe (a writable location).
+    In a normal source checkout it is the repository root.
+    """
+    if getattr(_sys, "frozen", False):
+        return Path(_sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = _root_dir()
 CONFIG_PATH = ROOT_DIR / "configuration.yaml"
 
 _DEFAULTS = {
@@ -39,10 +52,20 @@ _DEFAULTS = {
 
 
 def _find_executable(name, extra_candidates=None):
-    """Find an executable, checking PATH then common install locations."""
+    """Find an executable, checking PATH then common install locations.
+
+    In a frozen (PyInstaller) build the binary is bundled next to the .exe in
+    a `bin/` subfolder, so once it is not on PATH we point straight at that
+    bundled copy. We avoid any existence check here on purpose: an
+    anti-virus scanner can briefly lock / hide a freshly written or unzipped
+    binary, making os.path.isfile() return False even though the file is
+    present, which would wrongly fall back to a bare name that is not on PATH.
+    """
     found = _shutil.which(name)
     if found:
         return found
+    if getattr(_sys, "frozen", False):
+        return str(Path(_sys.executable).resolve().parent / "bin" / name)
     for path in (extra_candidates or []):
         expanded = _os.path.expandvars(path)
         if _os.path.isfile(expanded):

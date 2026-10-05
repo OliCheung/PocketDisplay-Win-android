@@ -11,12 +11,17 @@ import functools
 import http.server
 import os
 import re
+import shutil
 import socketserver
 import sys
 import threading
 import time
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    # In a PyInstaller build the bundled assets/ui live in the read-only temp
+    # dir _MEIPASS; the persisted configuration.yaml lives next to the .exe.
+    ROOT_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -467,8 +472,26 @@ def _run():
             pass
 
 
+def _ensure_user_config():
+    """In a frozen build, drop the bundled default configuration.yaml next to
+    the .exe on first run so user edits persist (the temp _MEIPASS dir is wiped)."""
+    if not getattr(sys, "frozen", False):
+        return
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    dest = os.path.join(exe_dir, "configuration.yaml")
+    if os.path.exists(dest):
+        return
+    src = os.path.join(getattr(sys, "_MEIPASS", ""), "configuration.yaml")
+    if os.path.exists(src):
+        try:
+            shutil.copyfile(src, dest)
+        except Exception:
+            pass
+
+
 def main():
     """Entry point: log any startup failure, since pythonw has no console."""
+    _ensure_user_config()
     try:
         _run()
     except Exception:

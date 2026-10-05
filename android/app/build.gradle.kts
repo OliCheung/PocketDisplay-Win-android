@@ -15,9 +15,25 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            // Values are only filled when a keystore is provided via environment
+            // variables (e.g. in CI / a local release build). When absent the
+            // config is simply unused, so a plain (unsigned) release APK still
+            // builds for local testing.
+            System.getenv("KEYSTORE_FILE")?.let { storeFile = file(it) }
+            System.getenv("KEYSTORE_PASSWORD")?.let { storePassword = it }
+            System.getenv("KEY_ALIAS")?.let { keyAlias = it }
+            System.getenv("KEY_PASSWORD")?.let { keyPassword = it }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (System.getenv("KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

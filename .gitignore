@@ -37,3 +37,32 @@ test_clip.mp4
 # Misc
 *.tmp
 *.orig
+
+# PyInstaller build output
+build/
+build_*/
+dist/
+dist_*/
+*.spec
+client_error.log
+
+# Local build logs / probes / release zips
+build_win*.log
+srv*.log
+srv*.err
+_probe.txt
+PocketDisplay-win.zip
+PocketDisplay-apk.zip
+
+# Unpacked release folder (the zip above is the deliverable)
+PocketDisplay-win/
+
+# Stray local test / log artifacts
+sderr.txt
+sdout.txt
+server_smoke.log
+server_smoke.err
+web_smoke.log
+web_smoke.err
+smoke_server.py
+

@@ -2,11 +2,11 @@ display:
   monitor_index: 1
   capture_width: 1366
   capture_height: 768
-  capture_fps: 30
+  capture_fps: 15
 encoding:
   preset: ultrafast
   tune: zerolatency
-  bitrate: 4M
+  bitrate: 2M
   keyframe_interval: 30
   profile: baseline
   level: '3.1'

@@ -34,7 +34,8 @@ jobs:
         run: choco install ffmpeg -y
 
       - name: Add FFmpeg to PATH
-        run: echo "C:\ProgramData\chocolatey\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
+        run: |
+          echo "C:\ProgramData\chocolatey\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
 
       - name: Install ADB (platform-tools, bundled into the exe)
         shell: pwsh
@@ -74,7 +75,8 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Decode keystore (if provided)
         if: ${{ secrets.KEYSTORE_BASE64 != '' }}

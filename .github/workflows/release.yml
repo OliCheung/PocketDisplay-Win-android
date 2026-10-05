@@ -96,6 +96,7 @@ jobs:
       - name: Build APK (signed release if keystore provided, else debug)
         working-directory: android
         run: |
+          chmod +x gradlew
           if [ -n "$KEYSTORE_FILE" ]; then
             echo "Building signed release APK"
             ./gradlew assembleRelease --no-daemon --init-script init.gradle

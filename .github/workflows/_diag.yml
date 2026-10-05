@@ -1,0 +1,11 @@
+name: diag
+on: workflow_dispatch
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - run: echo windows-ok
+  lin:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo linux-ok

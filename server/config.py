@@ -31,6 +31,7 @@ _DEFAULTS = {
         "capture_fps": 30,
     },
     "encoding": {
+        "encoder": "auto",
         "preset": "ultrafast",
         "tune": "zerolatency",
         "bitrate": "4M",
@@ -108,6 +109,7 @@ FFMPEG_PATH = _find_executable("ffmpeg", [
     r"C:\ffmpeg\bin\ffmpeg.exe",
     r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
 ])
+H264_ENCODER = str(_get_value("encoding", "encoder"))
 H264_PRESET = str(_get_value("encoding", "preset"))
 H264_TUNE = str(_get_value("encoding", "tune"))
 H264_BITRATE = str(_get_value("encoding", "bitrate"))

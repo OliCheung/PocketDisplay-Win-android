@@ -8,7 +8,7 @@ import time
 from config import (
     MONITOR_INDEX, VIDEO_PORT, CONTROL_PORT, HOST,
     CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS,
-    FFMPEG_PATH, H264_PRESET, H264_TUNE, H264_BITRATE,
+    FFMPEG_PATH, H264_ENCODER, H264_PRESET, H264_TUNE, H264_BITRATE,
     KEYFRAME_INTERVAL, H264_PROFILE, H264_LEVEL,
     H264_SLICES, H264_THREADS
 )
@@ -23,6 +23,149 @@ def _hidden_kwargs():
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {}
+
+
+def _list_ffmpeg_encoders(ffmpeg_path):
+    """Return the set of video encoders ffmpeg was compiled with.
+
+    Used to confirm a hardware encoder (nvenc/qsv/amf) is actually present
+    before we try to use it, since a static build may lack them."""
+    try:
+        proc = subprocess.run(
+            [ffmpeg_path, "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=20,
+            **_hidden_kwargs(),
+        )
+        blob = (proc.stderr or "") + (proc.stdout or "")
+    except Exception:
+        return set()
+    encoders = set()
+    for line in blob.splitlines():
+        # ffmpeg lists encoders like: " V..... libx264  ..."
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].startswith("V") and not parts[0].startswith("VF"):
+            encoders.add(parts[1])
+    return encoders
+
+
+def _detect_gpu_vendor():
+    """Best-effort detection of the primary GPU vendor on Windows.
+
+    Returns one of 'nvidia', 'intel', 'amd', or 'unknown'."""
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_VideoController).Name"],
+            capture_output=True, text=True, timeout=20,
+            **_hidden_kwargs(),
+        )
+        text = (proc.stdout or "").lower()
+    except Exception:
+        text = ""
+    if "nvidia" in text:
+        return "nvidia"
+    if "intel" in text:
+        return "intel"
+    if "amd" in text or "radeon" in text or "advanced micro" in text:
+        return "amd"
+    return "unknown"
+
+
+def _select_encoder():
+    """Pick the H.264 encoder to use.
+
+    Honors an explicit ``encoding.encoder`` value from configuration.yaml
+    (e.g. ``libx264``, ``h264_nvenc``, ``h264_qsv``, ``h264_amf``).
+    When set to ``auto`` (default) it detects the GPU vendor and falls back
+    to whatever hardware encoder ffmpeg actually supports; if none is found
+    it safely returns to the CPU ``libx264`` encoder.
+    """
+    preferred = (H264_ENCODER or "auto").strip().lower()
+    explicit = preferred in {
+        "libx264", "h264_nvenc", "h264_qsv", "h264_amf",
+    }
+    if explicit:
+        return preferred
+
+    vendor = _detect_gpu_vendor()
+    encoders = _list_ffmpeg_encoders(FFMPEG_PATH)
+
+    # Prefer the hardware encoder matching the detected GPU, but only if
+    # ffmpeg was built with it. Otherwise fall through to the generic checks
+    # below and ultimately to libx264.
+    if vendor == "nvidia" and "h264_nvenc" in encoders:
+        return "h264_nvenc"
+    if vendor == "intel" and "h264_qsv" in encoders:
+        return "h264_qsv"
+    if vendor == "amd" and "h264_amf" in encoders:
+        return "h264_amf"
+
+    # GPU not recognised but a hardware encoder is available anyway
+    # (e.g. headless detection miss). Use it opportunistically.
+    for hw in ("h264_nvenc", "h264_qsv", "h264_amf"):
+        if hw in encoders:
+            return hw
+
+    return "libx264"
+
+
+SELECTED_ENCODER = _select_encoder()
+
+
+def _encoder_args(encoder):
+    """Build the ffmpeg video-encoder argument list for the given encoder.
+
+    Common rate-control (CBR with forced keyframes) is shared so the client
+    always sees a clean, seekable Annex-B H.264 stream. Hardware encoders use
+    their low-latency presets; libx264 uses the configured preset/tune.
+    """
+    args = [
+        "-c:v", encoder,
+        "-b:v", H264_BITRATE,
+        "-maxrate", H264_BITRATE,
+        "-bufsize", H264_BITRATE,
+        "-g", str(KEYFRAME_INTERVAL),
+        "-keyint_min", str(KEYFRAME_INTERVAL),
+    ]
+    if encoder == "libx264":
+        args += [
+            "-profile:v", H264_PROFILE,
+            "-level", H264_LEVEL,
+            "-preset", H264_PRESET,
+            "-tune", H264_TUNE,
+            "-threads", str(H264_THREADS),
+            "-x264-params",
+            f"repeat-headers=1:slices={H264_SLICES}:threads={H264_THREADS}",
+        ]
+    elif encoder == "h264_nvenc":
+        args += [
+            "-profile:v", H264_PROFILE,
+            "-level", H264_LEVEL,
+            "-preset", "p1",
+            "-tune", "ll",
+            "-rc", "cbr",
+            "-delay", "0",
+        ]
+    elif encoder == "h264_qsv":
+        args += [
+            "-profile:v", H264_PROFILE,
+            "-level", H264_LEVEL,
+            "-preset", "veryfast",
+            "-tune", "zerolatency",
+            "-rc", "cbr",
+            "-look_ahead", "0",
+        ]
+    elif encoder == "h264_amf":
+        # AMF rejects "-profile:v baseline" (and is picky about level), so we
+        # omit profile/level entirely and let it use its defaults; Android's
+        # MediaCodec decodes main/high fine.
+        args += [
+            "-usage", "lowlatency",
+            "-quality", "balanced",
+            "-preset", "speed",
+            "-rc", "cbr",
+        ]
+    return args
 
 
 def _print_local_ips():
@@ -223,6 +366,9 @@ def main():
         print(f"  Capture offset: ({offset_x}, {offset_y})")
         print(f"  Resolution: {width}x{height}")
         print(f"  Using FFmpeg at: {FFMPEG_PATH}")
+        print(f"  Video encoder: {SELECTED_ENCODER}"
+              + (" (auto-detected)" if (H264_ENCODER or "auto").strip().lower() == "auto"
+                 else " (from configuration.yaml)"))
 
         def build_cmd(w, h, ox, oy):
             return [
@@ -233,18 +379,7 @@ def main():
                 "-offset_y", str(oy),
                 "-video_size", f"{w}x{h}",
                 "-i", "desktop",
-                "-c:v", "libx264",
-                "-profile:v", H264_PROFILE,
-                "-level", H264_LEVEL,
-                "-preset", H264_PRESET,
-                "-tune", H264_TUNE,
-                "-b:v", H264_BITRATE,
-                "-maxrate", H264_BITRATE,
-                "-bufsize", H264_BITRATE,
-                "-g", str(KEYFRAME_INTERVAL),
-                "-keyint_min", str(KEYFRAME_INTERVAL),
-                "-threads", str(H264_THREADS),
-                "-x264-params", f"repeat-headers=1:slices={H264_SLICES}:threads={H264_THREADS}",
+            ] + _encoder_args(SELECTED_ENCODER) + [
                 "-pix_fmt", "yuv420p",
                 "-f", "h264",
                 "-an",

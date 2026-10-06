@@ -63,6 +63,9 @@
                               display: flex; flex-direction: column; }
     .log-box {
       flex: 1 1 auto; height: auto; min-height: 120px;
+      /* Cap the log area so a chatty server log grows the inner scroll,
+         not the whole window (the window otherwise resizes to fit content). */
+      max-height: 460px;
       overflow: auto; white-space: pre-wrap; word-break: break-all;
       background: #fff; border: 1px solid #dcdcdc; border-radius: 6px;
       padding: 8px 10px; font-size: 12px; line-height: 1.65;

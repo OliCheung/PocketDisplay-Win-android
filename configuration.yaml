@@ -1,7 +1,7 @@
 display:
-  monitor_index: 1
-  capture_width: 1366
-  capture_height: 768
+  monitor_index: 0
+  capture_width: 1280
+  capture_height: 1024
   capture_fps: 15
 encoding:
   preset: ultrafast
@@ -12,6 +12,7 @@ encoding:
   level: '3.1'
   slices: 1
   threads: 1
+  encoder: auto
 network:
   video_port: 5000
   control_port: 5002
